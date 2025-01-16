@@ -6,6 +6,7 @@ from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse
 from abc import ABC, abstractmethod
 from traceback import print_exc
+from importlib.resources import files
 
 from jinja2 import Environment, FunctionLoader, select_autoescape
 
@@ -202,13 +203,13 @@ def bool_param(query_values):
     value = query_values[0].casefold()
     return value != 'false' and value != '0'
 
-def get_jinja_loader(module_base):
+def get_jinja_loader(module_name):
     templates = {}
     
     def get_template(name):
         nonlocal templates
         
-        target = str(module_base.joinpath(*name.split('/')))
+        target = str(files(module_name).joinpath(*name.split('/')))
         
         last_mtime = templates.get(target)
         current_mtime = os.stat(target).st_mtime
@@ -224,8 +225,8 @@ def get_jinja_loader(module_base):
     
     return get_template
 
-def get_jinja_env(module_base):
-    return Environment(loader=FunctionLoader(get_jinja_loader(module_base)), autoescape=select_autoescape())
+def get_jinja_env(module_name):
+    return Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape())
 
 file_types = {
     '.aac': 'audio/aac',

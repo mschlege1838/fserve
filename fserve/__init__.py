@@ -3,18 +3,21 @@ import os.path
 import re
 from threading import Thread, Lock
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
+from urllib.parse import urlparse, unquote
 from abc import ABC, abstractmethod
 from traceback import print_exc
 from importlib.resources import files
+from hashlib import sha256
 
 from jinja2 import Environment, FunctionLoader, select_autoescape
+from jinja2.nodes import Const, ExprStmt, Include
+from jinja2.ext import Extension
 
 class FileRequestHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
     
     def __init__(self, request, client_address, server):
         super().__init__(request, client_address, server)
-        self.protocol_version = 'HTTP/1.1'
     
     def do_GET(self):
         if self.check_sub_handlers():
@@ -29,13 +32,18 @@ class FileRequestHandler(BaseHTTPRequestHandler):
             with open(fname, 'rb') as f:
                 data = f.read()
         except FileNotFoundError:
-            for fname in ['index.html', 'index.htm']:
-                try:
-                    with open(os.path.join(base_dir, *segs, fname), 'rb') as f:
-                        data = f.read()
-                        break
-                except FileNotFoundError:
-                    pass
+            try:
+                fname = os.path.join(base_dir, *(unquote(e) for e in segs))
+                with open(fname, 'rb') as f:
+                    data = f.read()
+            except FileNotFoundError:
+                for fname in ['index.html', 'index.htm']:
+                    try:
+                        with open(os.path.join(base_dir, *segs, fname), 'rb') as f:
+                            data = f.read()
+                            break
+                    except FileNotFoundError:
+                        pass
         
         if data:
             self.send_response(200)
@@ -203,7 +211,7 @@ def bool_param(query_values):
     value = query_values[0].casefold()
     return value != 'false' and value != '0'
 
-def get_jinja_loader(module_name):
+def get_jinja_loader(module_name, encoding='utf-8'):
     templates = {}
     
     def get_template(name):
@@ -218,15 +226,81 @@ def get_jinja_loader(module_name):
             return last_mtime is not None and last_mtime >= current_mtime
         
         try:
-            with open(target) as f:
+            with open(target, encoding=encoding) as f:
                 return (f.read(), target, up_to_date)
         except FileNotFoundError:
             return None
     
     return get_template
 
-def get_jinja_env(module_name):
-    return Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape())
+def get_jinja_env(module_name, extensions=[]):
+    return Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape(), extensions=extensions)
+
+
+stylesheet_ref_prefix = f'{__name__}_StylesheetExtension_'
+class StylesheetExtension(Extension):
+    tags = {'stylesheet'}
+    
+    def __init__(self, environment):
+        super().__init__(environment)
+        self.template_sha = None
+    
+    def preprocess(self, source, name, filename):
+        m = sha256()
+        m.update(source.encode())
+        self.template_sha = m.hexdigest()
+        return source
+    
+    def parse(self, parser):
+        lineno = next(parser.stream).lineno
+        
+        href = parser.parse_expression()
+        if not isinstance(href, Const):
+            raise TemplateSyntaxError(f'Stylesheet href must be Const expression. Got: {href}', lineno, parser.name, parser.filename)
+        
+        return ExprStmt(f'{stylesheet_ref_prefix}{self.template_sha}={href.value}').set_lineno(lineno)
+
+stylesheet_ref_pattern = re.compile(stylesheet_ref_prefix + r'(?P<sha>.+?)=(?P<href>.+)')
+dir_sep_chars = re.compile(r'[/\\]+')
+class StylesheetsExtension(Extension):
+    tags = {'stylesheets'}
+    
+    def __init__(self, environment):
+        super().__init__(environment)
+        environment.extend(stylesheet_href_store={}, search_prefix='.')
+    
+    def preprocess(self, source, name, filename):
+        
+        return source
+        
+    def parse(self, parser):
+        
+        
+        lineno = next(parser.stream).lineno
+        return nodes.CallBlock(self.call_method('dump_hrefs'), [], [], []).set_lineno(lineno)
+    
+    def dump_hrefs(self, caller):
+        return '\n'.join(f'<link rel="stylesheet" href="{e}" />' for e in self.environment.stylesheet_href_store[self.template_sha])
+    
+    def walk(self, tree):
+        for child in tree.iter_child_nodes():
+            if isinstance(child, Include):
+                with open(os.path.join(self.environment.search_prefix, *dir_sep_chars.split(child.template.value))) as f:
+                    self.walk(self.environment.parse(f.read()))
+            elif isinstance(child, ExprStmt):
+                m = stylesheet_ref_pattern.match(child.value)
+                if m:
+                    template_sha = m.group('sha')
+                    href = m.group('href')
+                    
+                    stylesheet_href_store = self.environment.stylesheet_href_store
+                    if template_sha in stylesheet_href_store:
+                        stylesheets = stylesheet_href_store[template_sha]
+                    else:
+                        stylesheets = stylesheet_href_store[template_sha] = []
+                    stylesheets.append(href)
+                    
+
 
 file_types = {
     '.aac': 'audio/aac',

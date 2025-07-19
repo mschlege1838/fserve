@@ -25,25 +25,20 @@ class FileRequestHandler(BaseHTTPRequestHandler):
         
         base_dir = self.server.base_dir if hasattr(self.server, 'base_dir') else '.'
         
-        segs = urlparse(self.path).path.split('/')
+        segs = urlparse(self.server.unquote_fn(self.path)).path.split('/')
         data = None
         try:
             fname = os.path.join(base_dir, *segs)
             with open(fname, 'rb') as f:
                 data = f.read()
         except FileNotFoundError:
-            try:
-                fname = os.path.join(base_dir, *(unquote(e) for e in segs))
-                with open(fname, 'rb') as f:
-                    data = f.read()
-            except FileNotFoundError:
-                for fname in ['index.html', 'index.htm']:
-                    try:
-                        with open(os.path.join(base_dir, *segs, fname), 'rb') as f:
-                            data = f.read()
-                            break
-                    except FileNotFoundError:
-                        pass
+            for fname in ['index.html', 'index.htm']:
+                try:
+                    with open(os.path.join(base_dir, *segs, fname), 'rb') as f:
+                        data = f.read()
+                        break
+                except FileNotFoundError:
+                    pass
         
         if data:
             self.send_response(200)
@@ -98,7 +93,7 @@ class FileRequestHandler(BaseHTTPRequestHandler):
         return False
 
 class BaseDirHTTPServer(ThreadingHTTPServer):
-    def __init__(self, server_address, RequestHandlerClass, base_dir='.', sub_handlers=None):
+    def __init__(self, server_address, RequestHandlerClass, base_dir='.', sub_handlers=None, unquote_fn=unquote):
         super().__init__(server_address, RequestHandlerClass)
         self.base_dir = base_dir
         if sub_handlers:
@@ -108,21 +103,24 @@ class BaseDirHTTPServer(ThreadingHTTPServer):
                 if not hasattr(sub_handler, 'handle') or not callable(sub_handler.handle):
                     raise ValueError('Sub-handler does not hae callable handle attribute: ', sub_handler)
         self.sub_handlers = sub_handlers
+        self.unquote_fn = unquote_fn
 
 
 class RegexSubHandler:    
-    def __init__(self, pattern, full_match=True, extract_path=False):
+    def __init__(self, pattern, full_match=True, extract_path=False, unquote_fn=unquote):
         self.pattern = pattern if isinstance(pattern, re.Pattern) else re.compile(pattern if pattern.endswith('/?') else pattern + '/?')
         self.full_match = full_match
         self.extract_path = extract_path
+        self.unquote_fn = unquote
     
     def match(self, handler):
+        path = self.unquote_fn(handler.path)
         if self.extract_path:
-            urlparse_result = urlparse(handler.path)
+            urlparse_result = urlparse(path)
             match_result = getattr(self.pattern, 'fullmatch' if self.full_match else 'match')(urlparse_result.path)
             return (match_result, urlparse_result) if match_result else None
         else:
-            return getattr(self.pattern, 'fullmatch' if self.full_match else 'match')(handler.path)
+            return getattr(self.pattern, 'fullmatch' if self.full_match else 'match')(path)
     
     def handle(self, handler, match):
         target = f'do_{handler.command.upper()}'

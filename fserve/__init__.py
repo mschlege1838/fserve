@@ -1,17 +1,29 @@
 import time
 import os.path
 import re
-from threading import Thread, Lock
+from threading import Thread
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote
-from abc import ABC, abstractmethod
 from traceback import print_exc
 from importlib.resources import files
-from hashlib import sha256
 
-from jinja2 import Environment, FunctionLoader, select_autoescape
-from jinja2.nodes import Const, ExprStmt, Include
-from jinja2.ext import Extension
+
+class AcceptItem:
+    def __init__(self, primary_type, subtype, quality=1.0):
+        self.primary_type = primary_type.casefold()
+        self.subtype = subtype.casefold()
+        self.quality = quality
+    
+    def matches(self, other):
+        if self.primary_type == '*':
+            return True
+        if self.primary_type != other.primary_type:
+            return False
+        if self.subtype == '*':
+            return True
+        return self.subtype == other.subtype
+
+
 
 class FileRequestHandler(BaseHTTPRequestHandler):
     protocol_version = 'HTTP/1.1'
@@ -129,7 +141,11 @@ class RegexSubHandler:
         else:
             handler.send_error(405)
 
-def local_serve(port, base_dir='.', sub_handlers=None, request_handler=FileRequestHandler):
+
+def local_serve(port, base_dir=None, sub_handlers=None, request_handler=FileRequestHandler):
+    if not base_dir:
+        base_dir = str(files())
+    
     server = BaseDirHTTPServer(('', port), request_handler, base_dir, sub_handlers)
     server_thread = Thread(target=server.serve_forever)
     server_thread.start()
@@ -145,8 +161,10 @@ def local_serve(port, base_dir='.', sub_handlers=None, request_handler=FileReque
         server_thread.join(timeout=10)
         print('Server stopped')
 
+
 def get_content_type(fname):
     return file_types.get(os.path.splitext(fname)[1], 'application/octet-stream')
+
 
 accept_list_pattern = re.compile(r'\s*,\s*')
 accept_element_pattern = re.compile(r'(?P<type>\w+)/(?P<subtype>\w+)(?:;q=(?P<quality>\w+))?')
@@ -187,117 +205,12 @@ def choose_accept(accept_header, *produces_list):
     
     return None
 
-class AcceptItem:
-    def __init__(self, primary_type, subtype, quality=1.0):
-        self.primary_type = primary_type.casefold()
-        self.subtype = subtype.casefold()
-        self.quality = quality
-    
-    def matches(self, other):
-        if self.primary_type == '*':
-            return True
-        if self.primary_type != other.primary_type:
-            return False
-        if self.subtype == '*':
-            return True
-        return self.subtype == other.subtype
-
 
 def bool_param(query_values):
     if not query_values:
         return
     value = query_values[0].casefold()
     return value != 'false' and value != '0'
-
-def get_jinja_loader(module_name, encoding='utf-8'):
-    templates = {}
-    
-    def get_template(name):
-        nonlocal templates
-        
-        target = str(files(module_name).joinpath(*name.split('/')))
-        
-        last_mtime = templates.get(target)
-        current_mtime = os.stat(target).st_mtime
-        def up_to_date():
-            nonlocal last_mtime, current_mtime
-            return last_mtime is not None and last_mtime >= current_mtime
-        
-        try:
-            with open(target, encoding=encoding) as f:
-                return (f.read(), target, up_to_date)
-        except FileNotFoundError:
-            return None
-    
-    return get_template
-
-def get_jinja_env(module_name, extensions=[]):
-    return Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape(), extensions=extensions)
-
-
-stylesheet_ref_prefix = f'{__name__}_StylesheetExtension_'
-class StylesheetExtension(Extension):
-    tags = {'stylesheet'}
-    
-    def __init__(self, environment):
-        super().__init__(environment)
-        self.template_sha = None
-    
-    def preprocess(self, source, name, filename):
-        m = sha256()
-        m.update(source.encode())
-        self.template_sha = m.hexdigest()
-        return source
-    
-    def parse(self, parser):
-        lineno = next(parser.stream).lineno
-        
-        href = parser.parse_expression()
-        if not isinstance(href, Const):
-            raise TemplateSyntaxError(f'Stylesheet href must be Const expression. Got: {href}', lineno, parser.name, parser.filename)
-        
-        return ExprStmt(f'{stylesheet_ref_prefix}{self.template_sha}={href.value}').set_lineno(lineno)
-
-stylesheet_ref_pattern = re.compile(stylesheet_ref_prefix + r'(?P<sha>.+?)=(?P<href>.+)')
-dir_sep_chars = re.compile(r'[/\\]+')
-class StylesheetsExtension(Extension):
-    tags = {'stylesheets'}
-    
-    def __init__(self, environment):
-        super().__init__(environment)
-        environment.extend(stylesheet_href_store={}, search_prefix='.')
-    
-    def preprocess(self, source, name, filename):
-        
-        return source
-        
-    def parse(self, parser):
-        
-        
-        lineno = next(parser.stream).lineno
-        return nodes.CallBlock(self.call_method('dump_hrefs'), [], [], []).set_lineno(lineno)
-    
-    def dump_hrefs(self, caller):
-        return '\n'.join(f'<link rel="stylesheet" href="{e}" />' for e in self.environment.stylesheet_href_store[self.template_sha])
-    
-    def walk(self, tree):
-        for child in tree.iter_child_nodes():
-            if isinstance(child, Include):
-                with open(os.path.join(self.environment.search_prefix, *dir_sep_chars.split(child.template.value))) as f:
-                    self.walk(self.environment.parse(f.read()))
-            elif isinstance(child, ExprStmt):
-                m = stylesheet_ref_pattern.match(child.value)
-                if m:
-                    template_sha = m.group('sha')
-                    href = m.group('href')
-                    
-                    stylesheet_href_store = self.environment.stylesheet_href_store
-                    if template_sha in stylesheet_href_store:
-                        stylesheets = stylesheet_href_store[template_sha]
-                    else:
-                        stylesheets = stylesheet_href_store[template_sha] = []
-                    stylesheets.append(href)
-                    
 
 
 file_types = {

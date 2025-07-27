@@ -1,5 +1,6 @@
 import os
 from importlib.resources import files
+from random import randbytes
 
 from jinja2 import Environment, FunctionLoader, select_autoescape
 from jinja2.nodes import ExprStmt, Const, CallBlock
@@ -66,12 +67,14 @@ def get_jinja_loader(module_name, encoding='utf-8', do_cache=True):
         
         target = str(files(module_name).joinpath(*name.split('/')))
         
-        current_mtime = os.stat(target).st_mtime
+        
         def up_to_date():
-            nonlocal do_cache, templates, target, current_mtime
+            nonlocal do_cache, templates, target
             if not do_cache:
                 return False
+            
             last_mtime = templates.get(target)
+            current_mtime = os.stat(target).st_mtime
             templates[target] = current_mtime
             return last_mtime is not None and last_mtime >= current_mtime
             
@@ -84,7 +87,12 @@ def get_jinja_loader(module_name, encoding='utf-8', do_cache=True):
     
     return get_template
 
+def randstr():
+    return randbytes(32).hex()
+
 def get_jinja_env(module_name, extensions=[]):
-    return Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape(), extensions=extensions)
+    env = Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape(), extensions=extensions)
+    env.globals['randstr'] = randstr
+    return env
 
 

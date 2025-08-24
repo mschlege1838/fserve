@@ -42,7 +42,7 @@ class StylesheetsExtension(Extension):
         for el in doc.elements:
             if isinstance(el, TemplateStatement):
                 # TODO support list-style import (first non-missing)
-                if el.command == 'include' and el.tokens[0].tok_type == TokenType.STR_LIT:
+                if el.command in ('include', 'import', 'from') and el.tokens[0].tok_type == TokenType.STR_LIT:
                     self.load_stylesheets(loader.get_source(env, el.tokens[0].value)[0], stylesheets)
                 elif el.command == 'stylesheet':
                     stylesheets.append(el.tokens[0].value)
@@ -90,7 +90,7 @@ def get_jinja_loader(module_name, encoding='utf-8', do_cache=True):
 def randstr():
     return randbytes(32).hex()
 
-def get_jinja_env(module_name, extensions=[]):
+def get_jinja_env(module_name, extensions=None):
     env = Environment(loader=FunctionLoader(get_jinja_loader(module_name)), autoescape=select_autoescape(), extensions=extensions)
     env.globals['randstr'] = randstr
     return env

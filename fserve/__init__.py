@@ -120,7 +120,8 @@ class BaseDirHTTPServer(ThreadingHTTPServer):
 
 class RegexSubHandler:    
     def __init__(self, pattern, full_match=True, extract_path=False, unquote_fn=unquote):
-        self.pattern = pattern if isinstance(pattern, re.Pattern) else re.compile(pattern if pattern.endswith('/?') else pattern + '/?')
+        self.pattern = pattern if isinstance(pattern, re.Pattern) else \
+                re.compile(pattern if pattern.endswith('/?') or pattern == '/' else pattern + '/?')
         self.full_match = full_match
         self.extract_path = extract_path
         self.unquote_fn = unquote
@@ -143,9 +144,6 @@ class RegexSubHandler:
 
 
 def local_serve(port, base_dir=None, sub_handlers=None, request_handler=FileRequestHandler):
-    if not base_dir:
-        base_dir = str(files())
-    
     server = BaseDirHTTPServer(('', port), request_handler, base_dir, sub_handlers)
     server_thread = Thread(target=server.serve_forever)
     server_thread.start()
